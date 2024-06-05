@@ -1,1 +1,8 @@
-
+websockets
+kafka-python
+pandas
+plotly
+Flask
+requests
+pydantic
+pytest
