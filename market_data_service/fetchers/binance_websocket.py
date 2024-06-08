@@ -2,14 +2,10 @@ import json
 import threading
 import time
 import websocket
+import logging
 import signal
 from confluent_kafka import Producer
 from market_data_service.config.config_manager import ConfigManager
-import logging
-import sys
-import os
-
-
 
 class BinanceFetcher:
     def __init__(self, symbol, market_type, config):
@@ -18,6 +14,7 @@ class BinanceFetcher:
         self.config = config
         self.ws_url = self.generate_ws_url()
         self.ws = None
+        self.producer = Producer({'bootstrap.servers': self.config.get('KAFKA', 'bootstrap_servers')})
         self.reconnect_interval = self.config.getint('DEFAULT', 'reconnect_interval')
         self.max_reconnect_interval = self.config.getint('DEFAULT', 'max_reconnect_interval')
         self.ping_interval = self.config.getint('DEFAULT', 'ping_interval')
@@ -29,7 +26,7 @@ class BinanceFetcher:
     def generate_ws_url(self):
         if self.market_type == 'futures':
             return self.config.get('WEBSOCKET', 'ws_url_futures').format(symbol=self.symbol)
-        else:  # Default to spot market
+        else:
             return self.config.get('WEBSOCKET', 'ws_url_spot').format(symbol=self.symbol)
 
     def connect(self):
@@ -68,6 +65,8 @@ class BinanceFetcher:
     def on_message(self, ws, message):
         data = json.loads(message)
         logging.info(f"Received data: {data}")
+        self.producer.produce('market_data_topic', key=self.symbol, value=json.dumps(data))
+        self.producer.flush()
 
     def on_error(self, ws, error):
         logging.error(f"WebSocket Error: {error}")
