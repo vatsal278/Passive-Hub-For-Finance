@@ -13,6 +13,11 @@ class Instrument:
 
     ohlc = {'open', 'high', 'low', 'close'}
 
+    UPTREND_CONTINUAL = 0
+    UPTREND_REVERSAL = 1
+    DOWNTREND_CONTINUAL = 2
+    DOWNTREND_REVERSAL = 3
+
     def _validate_df(self):
         if not self.ohlc.issubset(self.df.columns):
             raise ValueError('DataFrame should have OHLC {} columns'.format(self.ohlc))
@@ -23,11 +28,8 @@ class Renko(Instrument):
 
     TREND_CHANGE_DIFF = 2
 
-    def __init__(self, df, brick_size, chart_type=PERIOD_CLOSE):
-        super().__init__(df)
-        self.brick_size = brick_size
-        self.chart_type = chart_type
-        self.cdf = pd.DataFrame()
+    brick_size = 20
+    chart_type = PERIOD_CLOSE
 
     def get_ohlc_data(self):
         if self.chart_type == self.PERIOD_CLOSE:
@@ -53,8 +55,6 @@ class Renko(Instrument):
         columns = ['date', 'open', 'high', 'low', 'close', 'uptrend']
 
         for index, row in self.df.iterrows():
-            if index == 0:
-                continue
 
             close = row['close']
             date = row['date']
@@ -101,12 +101,25 @@ class Renko(Instrument):
         self.cdf.reset_index(inplace=True, drop=True)
         return self.cdf
 
+    def shift_bricks(self):
+        shift = self.df['close'].iloc[-1] - self.bdf['close'].iloc[-1]
+        if abs(shift) < self.brick_size:
+            return
+        step = shift // self.brick_size
+        self.bdf[['open', 'close']] += step * self.brick_size
+
+    def process_tick_data(self, tick_data):
+        new_tick_df = pd.DataFrame([tick_data])
+        self.df = pd.concat([self.df, new_tick_df], ignore_index=True)
+        self.get_ohlc_data()
+
 class RenkoProcessor:
     def __init__(self, config):
         self.config = config
         self.consumer = self.create_consumer()
         self.producer = self.create_producer()
         self.ohlc_data = []
+        self.last_processed_index = -1  # Initialize the last processed index
 
     def create_consumer(self):
         return Consumer({
@@ -144,34 +157,36 @@ class RenkoProcessor:
         }
         self.ohlc_data.append(ohlc_record)
 
-        # Limit the size of ohlc_data list to prevent it from growing indefinitely
-        max_data_points = 10  # Set the maximum number of data points you want to retain
-        if len(self.ohlc_data) > max_data_points:
-            self.ohlc_data.pop(0)  # Remove the oldest data point
-
         # Call generate_renko method to check if new Renko bricks need to be generated
         self.generate_renko()
-
 
     def generate_renko(self):
         if not self.ohlc_data or len(self.ohlc_data) == 0:
             return
 
         df = pd.DataFrame(self.ohlc_data)
-        renko = Renko(df, brick_size=20)
+        renko = Renko(df)
         renko_bricks = renko.get_ohlc_data()
 
-        # Check if there are new Renko bricks to publish
-        if len(renko_bricks) > len(self.ohlc_data):
-            new_bricks = renko_bricks.iloc[len(self.ohlc_data):]
-            for _, brick in new_bricks.iterrows():
-                self.produce_renko(brick)
+        # Publish all new bricks from the last processed index
+        new_bricks = renko_bricks.iloc[self.last_processed_index + 1:]
+        for _, brick in new_bricks.iterrows():
+            self.produce_renko(brick)
 
-            # Update the OHLC data list
-            self.ohlc_data = renko_bricks.to_dict(orient='records')
+        # Update the last processed index
+        self.last_processed_index = len(renko_bricks) - 1
 
     def produce_renko(self, brick):
         brick_data = brick.to_dict()
+
+        # Ensure 'date' is a datetime object before calling isoformat()
+        if not isinstance(brick_data['date'], datetime):
+            try:
+                brick_data['date'] = pd.to_datetime(brick_data['date'])
+            except ValueError:
+                logging.error(f"Invalid date format: {brick_data['date']}")
+                return
+
         brick_data['date'] = brick_data['date'].isoformat()
         self.producer.produce(
             self.config.get('KAFKA', 'renko_data_topic'),
@@ -180,9 +195,8 @@ class RenkoProcessor:
         )
         self.producer.flush()
 
-
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.DEBUG)
     config = ConfigManager()
 
     processor = RenkoProcessor(config=config)
