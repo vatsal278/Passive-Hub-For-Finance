@@ -64,9 +64,13 @@ class BinanceFetcher:
 
     def on_message(self, ws, message):
         data = json.loads(message)
-        logging.info(f"Received data: {data}")
-        self.producer.produce('market_data_topic', key=self.symbol, value=json.dumps(data))
-        self.producer.flush()
+        logging.debug(f"Received data: {data}")
+        try:
+            self.producer.produce('market_data_topic', key=self.symbol, value=json.dumps(data))
+            self.producer.flush()
+            logging.info(f"Produced market data for {self.symbol}")
+        except Exception as e:
+            logging.error(f"Error publishing market data: {str(e)}")
 
     def on_error(self, ws, error):
         logging.error(f"WebSocket Error: {error}")

@@ -3,7 +3,7 @@ import logging
 from datetime import datetime, timedelta
 from confluent_kafka import Consumer, Producer
 from market_data_service.config.config_manager import ConfigManager
-
+from market_data_service.message_broker.kafka_client import KafkaClient
 class CandlestickConverter:
     def __init__(self, timeframe_seconds):
         self.timeframe_seconds = timeframe_seconds
@@ -63,35 +63,20 @@ class CandlestickConverter:
 class CandlestickProcessor:
     def __init__(self, config):
         self.config = config
-        self.consumer = self.create_consumer()
-        self.producer = self.create_producer()
+        self.kafka_client = KafkaClient(config)
+        self.consumer = self.kafka_client.create_consumer(
+            topic=self.config.get('KAFKA', 'market_data_topic'),
+            group_id=self.config.get('KAFKA', 'group_id')
+        )
+        self.producer = self.kafka_client.create_producer()
         self.converter = CandlestickConverter(timeframe_seconds=float(self.config.get('PROCESSOR', 'candlestick_interval')))
 
-    def create_consumer(self):
-        return Consumer({
-            'bootstrap.servers': self.config.get('KAFKA', 'bootstrap_servers'),
-            'group.id': self.config.get('KAFKA', 'group_id'),
-            'auto.offset.reset': 'earliest'
-        })
-
-    def create_producer(self):
-        return Producer({
-            'bootstrap.servers': self.config.get('KAFKA', 'bootstrap_servers')
-        })
-
     def process_messages(self):
-        self.consumer.subscribe([self.config.get('KAFKA', 'market_data_topic')])
         while True:
-            msg = self.consumer.poll(1.0)
-            if msg is None:
-                continue
-            if msg.error():
-                logging.error(f"Consumer error: {msg.error()}")
-                continue
-
-            data = json.loads(msg.value().decode('utf-8'))
-            logging.info(f"Received message: {data}")
-            self.process_data(data)
+            data = self.kafka_client.consume_message(self.consumer)
+            if data:
+                logging.info(f"Received message: {data}")
+                self.process_data(data)
 
     def process_data(self, data):
         candlestick_closed = self.converter.update_tick(data)
@@ -101,19 +86,17 @@ class CandlestickProcessor:
                 self.produce_candlestick(closed_candlestick)
 
     def produce_candlestick(self, candlestick):
-        # Convert datetime to string for serialization
         candlestick['start_time'] = candlestick['start_time'].isoformat()
-        self.producer.produce(
-            self.config.get('KAFKA', 'candlestick_data_topic'),
+        self.kafka_client.produce_message(
+            producer=self.producer,
+            topic=self.config.get('KAFKA', 'candlestick_data_topic'),
             key=str(candlestick['start_time']),
-            value=json.dumps(candlestick)
+            value=candlestick
         )
-        self.producer.flush()
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.DEBUG)
     config = ConfigManager()
 
     processor = CandlestickProcessor(config=config)
     processor.process_messages()
-

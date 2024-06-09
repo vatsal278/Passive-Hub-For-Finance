@@ -4,6 +4,7 @@ import logging
 from datetime import datetime
 from confluent_kafka import Consumer, Producer
 from market_data_service.config.config_manager import ConfigManager
+from market_data_service.message_broker.kafka_client import KafkaClient
 
 class Instrument:
     def __init__(self, df):
@@ -55,7 +56,6 @@ class Renko(Instrument):
         columns = ['date', 'open', 'high', 'low', 'close', 'uptrend']
 
         for index, row in self.df.iterrows():
-
             close = row['close']
             date = row['date']
 
@@ -116,36 +116,20 @@ class Renko(Instrument):
 class RenkoProcessor:
     def __init__(self, config):
         self.config = config
-        self.consumer = self.create_consumer()
-        self.producer = self.create_producer()
+        self.kafka_client = KafkaClient(config)
+        self.consumer = self.kafka_client.create_consumer(
+            topic=self.config.get('KAFKA', 'candlestick_data_topic'),
+            group_id=self.config.get('KAFKA', 'group_id')
+        )
+        self.producer = self.kafka_client.create_producer()
         self.ohlc_data = []
-        self.last_processed_index = -1  # Initialize the last processed index
-
-    def create_consumer(self):
-        return Consumer({
-            'bootstrap.servers': self.config.get('KAFKA', 'bootstrap_servers'),
-            'group.id': self.config.get('KAFKA', 'group_id'),
-            'auto.offset.reset': 'earliest'
-        })
-
-    def create_producer(self):
-        return Producer({
-            'bootstrap.servers': self.config.get('KAFKA', 'bootstrap_servers')
-        })
+        self.last_processed_index = -1
 
     def process_messages(self):
-        self.consumer.subscribe([self.config.get('KAFKA', 'candlestick_data_topic')])
         while True:
-            msg = self.consumer.poll(1.0)
-            if msg is None:
-                continue
-            if msg.error():
-                logging.error(f"Consumer error: {msg.error()}")
-                continue
-
-            data = json.loads(msg.value().decode('utf-8'))
-            
-            self.process_data(data)
+            data = self.kafka_client.consume_message(self.consumer)
+            if data:
+                self.process_data(data)
 
     def process_data(self, data):
         ohlc_record = {
@@ -156,8 +140,6 @@ class RenkoProcessor:
             'close': data['close']
         }
         self.ohlc_data.append(ohlc_record)
-
-        # Call generate_renko method to check if new Renko bricks need to be generated
         self.generate_renko()
 
     def generate_renko(self):
@@ -167,33 +149,26 @@ class RenkoProcessor:
         df = pd.DataFrame(self.ohlc_data)
         renko = Renko(df)
         renko_bricks = renko.get_ohlc_data()
-
-        # Publish all new bricks from the last processed index
         new_bricks = renko_bricks.iloc[self.last_processed_index + 1:]
         for _, brick in new_bricks.iterrows():
             self.produce_renko(brick)
-
-        # Update the last processed index
         self.last_processed_index = len(renko_bricks) - 1
 
     def produce_renko(self, brick):
         brick_data = brick.to_dict()
-
-        # Ensure 'date' is a datetime object before calling isoformat()
         if not isinstance(brick_data['date'], datetime):
             try:
                 brick_data['date'] = pd.to_datetime(brick_data['date'])
             except ValueError:
                 logging.error(f"Invalid date format: {brick_data['date']}")
                 return
-
         brick_data['date'] = brick_data['date'].isoformat()
-        self.producer.produce(
-            self.config.get('KAFKA', 'renko_data_topic'),
+        self.kafka_client.produce_message(
+            producer=self.producer,
+            topic=self.config.get('KAFKA', 'renko_data_topic'),
             key=brick_data['date'],
-            value=json.dumps(brick_data)
+            value=brick_data
         )
-        self.producer.flush()
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG)
