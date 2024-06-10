@@ -105,23 +105,3 @@ class BinanceFetcher:
         if self.ws:
             self.ws.close()
         logging.info("Fetcher closed gracefully.")
-
-def signal_handler(sig, frame):
-    logging.info("Signal received, shutting down...")
-    fetcher.close()
-    exit(0)
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-
-    config = ConfigManager()
-
-    try:
-        fetcher = BinanceFetcher(symbol='btcusdt', market_type='spot', config=config)
-        while True:
-            time.sleep(10)  # Keep the main thread alive
-    except KeyboardInterrupt:
-        logging.info("Interrupted by user")
-        fetcher.close()

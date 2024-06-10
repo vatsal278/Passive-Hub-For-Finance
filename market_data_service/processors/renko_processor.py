@@ -1,9 +1,8 @@
+import threading
+import logging
 import pandas as pd
 import json
-import logging
 from datetime import datetime
-from confluent_kafka import Consumer, Producer
-from market_data_service.config.config_manager import ConfigManager
 from market_data_service.message_broker.kafka_client import KafkaClient
 
 class Instrument:
@@ -124,12 +123,19 @@ class RenkoProcessor:
         self.producer = self.kafka_client.create_producer()
         self.ohlc_data = []
         self.last_processed_index = -1
+        self.stop_event = threading.Event()
+        self.thread = None
 
     def process_messages(self):
-        while True:
-            data = self.kafka_client.consume_message(self.consumer)
-            if data:
-                self.process_data(data)
+        try:
+            while not self.stop_event.is_set():
+                data = self.kafka_client.consume_message(self.consumer)
+                if data:
+                    self.process_data(data)
+        except Exception as e:
+            logging.error(f"Exception in RenkoProcessor: {str(e)}")
+        finally:
+            self.consumer.close()
 
     def process_data(self, data):
         ohlc_record = {
@@ -170,9 +176,13 @@ class RenkoProcessor:
             value=brick_data
         )
 
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG)
-    config = ConfigManager()
+    def start(self):
+        self.thread = threading.Thread(target=self.process_messages)
+        self.thread.start()
 
-    processor = RenkoProcessor(config=config)
-    processor.process_messages()
+    def stop(self):
+        logging.info("Stopping RenkoProcessor...")
+        self.stop_event.set()
+        if self.thread:
+            self.thread.join()
+        logging.info("RenkoProcessor stopped gracefully.")

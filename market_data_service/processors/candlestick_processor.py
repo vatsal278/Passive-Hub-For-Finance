@@ -4,6 +4,8 @@ from datetime import datetime, timedelta
 from confluent_kafka import Consumer, Producer
 from market_data_service.config.config_manager import ConfigManager
 from market_data_service.message_broker.kafka_client import KafkaClient
+from threading import Event, Thread
+
 class CandlestickConverter:
     def __init__(self, timeframe_seconds):
         self.timeframe_seconds = timeframe_seconds
@@ -70,13 +72,22 @@ class CandlestickProcessor:
         )
         self.producer = self.kafka_client.create_producer()
         self.converter = CandlestickConverter(timeframe_seconds=float(self.config.get('PROCESSOR', 'candlestick_interval')))
+        self.stop_event = Event()
+
+    def start(self):
+        # Starting the processing thread
+        self.processing_thread = Thread(target=self.process_messages)
+        self.processing_thread.start()
+        logging.info("CandlestickProcessor started.")
 
     def process_messages(self):
-        while True:
+        while not self.stop_event.is_set():
             data = self.kafka_client.consume_message(self.consumer)
             if data:
                 logging.info(f"Received message: {data}")
                 self.process_data(data)
+            else:
+                self.stop_event.wait(0.1)
 
     def process_data(self, data):
         candlestick_closed = self.converter.update_tick(data)
@@ -91,12 +102,23 @@ class CandlestickProcessor:
             producer=self.producer,
             topic=self.config.get('KAFKA', 'candlestick_data_topic'),
             key=str(candlestick['start_time']),
-            value=candlestick
+            value=json.dumps(candlestick)  # Ensure the message value is properly serialized as JSON
         )
+
+    def stop(self):
+        self.stop_event.set()
+        self.consumer.close()
+        if self.processing_thread.is_alive():
+            self.processing_thread.join()
+        logging.info("CandlestickProcessor stopped gracefully.")
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG)
     config = ConfigManager()
-
     processor = CandlestickProcessor(config=config)
-    processor.process_messages()
+    try:
+        processor.start()
+        processor.processing_thread.join()  # Wait for the processing thread to finish
+    except KeyboardInterrupt:
+        logging.info("Interrupt received, stopping processor...")
+        processor.stop()
