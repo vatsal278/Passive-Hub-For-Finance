@@ -9,7 +9,7 @@ from market_data_service.config.config_manager import ConfigManager
 
 class BinanceFetcher:
     def __init__(self, symbol, market_type, config):
-        self.symbol = symbol
+        self.symbol = symbol.lower()
         self.market_type = market_type
         self.config = config
         self.ws_url = self.generate_ws_url()

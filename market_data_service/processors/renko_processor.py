@@ -138,15 +138,22 @@ class RenkoProcessor:
             self.consumer.close()
 
     def process_data(self, data):
-        ohlc_record = {
-            'date': data['start_time'],
-            'open': data['open'],
-            'high': data['high'],
-            'low': data['low'],
-            'close': data['close']
-        }
-        self.ohlc_data.append(ohlc_record)
-        self.generate_renko()
+        try:
+            logging.info(f"Processing data: {data}")
+            if isinstance(data, dict):
+                ohlc_record = {
+                    'date': data['start_time'],
+                    'open': data['open'],
+                    'high': data['high'],
+                    'low': data['low'],
+                    'close': data['close']
+                }
+                self.ohlc_data.append(ohlc_record)
+                self.generate_renko()
+            else:
+                logging.error("Invalid data format received in RenkoProcessor")
+        except Exception as e:
+            logging.error(f"Exception in RenkoProcessor: {e}")
 
     def generate_renko(self):
         if not self.ohlc_data or len(self.ohlc_data) == 0:
